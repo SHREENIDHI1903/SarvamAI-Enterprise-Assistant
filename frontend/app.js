@@ -49,7 +49,9 @@ const elements = {
     voicePlayingLang: document.getElementById("voice-playing-lang"),
     audioPlayPauseBtn: document.getElementById("audio-play-pause-btn"),
     audioStopBtn: document.getElementById("audio-stop-btn"),
-    globalAudioPlayer: document.getElementById("global-audio-player")
+    globalAudioPlayer: document.getElementById("global-audio-player"),
+    ocrBtn: document.getElementById("ocr-btn"),
+    ocrFileInput: document.getElementById("ocr-file-input")
 };
 
 // ==========================================================================
@@ -65,6 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupRAGHandlers();
     setupPreferencesHandlers();
     setupSTTHandlers();
+    setupOCRHandlers();
     setupSuggestedChips();
 });
 
@@ -74,6 +77,13 @@ document.addEventListener("DOMContentLoaded", () => {
 function setupPreferencesHandlers() {
     elements.voicePace.addEventListener("input", (e) => {
         elements.paceVal.innerText = `${e.target.value}x`;
+    });
+
+    // Reset conversation history when target language changes to prevent model in-context language blending
+    elements.languageSelect.addEventListener("change", () => {
+        state.messages = [];
+        const activeLangName = elements.languageSelect.options[elements.languageSelect.selectedIndex].text.split(" (")[0];
+        appendMessageBubble("bot", `🌐 **[System Notification]** Target language changed to **${activeLangName}**. The conversation history has been reset to ensure high-quality translation and reasoning in your preferred language.`);
     });
 }
 
@@ -190,8 +200,9 @@ function setupChatInputHandlers() {
 }
 
 function formatMarkdown(text) {
+    if (!text) return "";
     // Basic rich rendering for bullets, bold, paragraphs, and newlines
-    let formatted = text
+    let formatted = String(text)
         .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>") // Bold
         .replace(/\*(.*?)\*/g, "<em>$1</em>"); // Italic
 
@@ -239,6 +250,15 @@ function appendMessageBubble(role, content, extra = {}) {
                 <span></span><span></span><span></span>
             </div>`;
     } else {
+        // Append reasoning_content if available and different from main content
+        if (extra.reasoning_content && extra.reasoning_content !== content) {
+            bubbleContent += `
+                <details class="thinking-block">
+                    <summary><i class="fa-solid fa-brain"></i> Thinking Process</summary>
+                    <div class="thinking-content">${formatMarkdown(extra.reasoning_content)}</div>
+                </details>`;
+        }
+        
         bubbleContent += formatMarkdown(content);
         
         // Append RAG Document citations if available
@@ -292,11 +312,15 @@ async function submitUserMessage() {
     const typingBubble = appendMessageBubble("bot", "", { isTyping: true });
     
     try {
+        const activeLangOption = elements.languageSelect.options[elements.languageSelect.selectedIndex];
+        const languageName = activeLangOption.text.split(" (")[0]; // e.g. "Kannada" or "Hindi"
+        
         const payload = {
             messages: state.messages,
             model: "sarvam-30b",
             use_rag: state.useRAG,
-            temperature: 0.5
+            temperature: 0.5,
+            target_language: languageName
         };
         
         // Call backend API
@@ -311,15 +335,23 @@ async function submitUserMessage() {
         
         if (res.ok) {
             const data = await res.json();
-            const botResponse = data.choices[0].message.content;
+            const choice = data.choices[0];
+            let botResponse = choice.message.content;
+            const reasoning = choice.message.reasoning_content;
+            
+            // Defensive fallback: If main content is empty but reasoning is present, use it
+            if (!botResponse && reasoning) {
+                botResponse = reasoning;
+            }
             
             // Display response bubble
             appendMessageBubble("bot", botResponse, {
                 rag_applied: data.rag_applied,
-                rag_sources: data.rag_sources
+                rag_sources: data.rag_sources,
+                reasoning_content: reasoning
             });
             
-            state.messages.push({ role: "assistant", content: botResponse });
+            state.messages.push({ role: "assistant", content: botResponse || reasoning || "" });
             
             // Auto play voice response if checked
             if (elements.voiceOutputToggle.checked) {
@@ -553,6 +585,83 @@ async function processRecordedAudio() {
     } catch (e) {
         typingBubble.remove();
         appendMessageBubble("bot", "🎙️ Connection error during Speech translation. Ensure the backend FastAPI server is online.");
+    }
+}
+
+// ==========================================================================
+// DOCUMENT DIGITIZATION & OCR (SARVAM VISION) COMPONENT
+// ==========================================================================
+function setupOCRHandlers() {
+    elements.ocrBtn.addEventListener("click", () => {
+        elements.ocrFileInput.click();
+    });
+
+    elements.ocrFileInput.addEventListener("change", (e) => {
+        if (e.target.files.length > 0) {
+            handleOCRUpload(e.target.files[0]);
+        }
+    });
+}
+
+async function handleOCRUpload(file) {
+    // 1. Basic format verification (Images & PDFs)
+    const allowedExts = [".pdf", ".png", ".jpg", ".jpeg", ".webp"];
+    const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+    
+    if (!allowedExts.includes(ext)) {
+        alert("Unsupported file type! Please select an Image (PNG, JPG, WEBP) or scanned PDF for text extraction.");
+        return;
+    }
+    
+    if (file.size > 10 * 1024 * 1024) { // 10MB Limit
+        alert("File size limit exceeded! Maximum allowed size is 10MB.");
+        return;
+    }
+    
+    // 2. Render Image Attachment Bubble on Frontend (for supreme visual fidelity)
+    if (file.type.startsWith("image/")) {
+        // Read file as base64 data URL to show a local thumbnail preview in the chat
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const dataUrl = e.target.result;
+            appendMessageBubble("user", `📷 **[Uploaded Document for OCR]**\n\n<img src="${dataUrl}" class="ocr-preview-thumbnail" alt="Scanning Document..." style="max-height: 180px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); margin-top: 8px; display: block;">`);
+        };
+        reader.readAsDataURL(file);
+    } else {
+        appendMessageBubble("user", `📷 **[Uploaded PDF for OCR]**\n\n📄 *\"${file.name}\"* (Scanned Document)`);
+    }
+
+    // 3. Show loading scanning state
+    const typingBubble = appendMessageBubble("bot", "", { isTyping: true });
+    
+    try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("language_code", elements.languageSelect.value); // Pass preferred language hint!
+        
+        const res = await fetch(`${BASE_URL}/api/ocr`, {
+            method: "POST",
+            body: formData
+        });
+        
+        typingBubble.remove();
+        
+        if (res.ok) {
+            const data = await res.json();
+            if (data.error) {
+                appendMessageBubble("bot", `📷 **[Digitization Failed]**\n\n⚠️ ${data.message || "Failed to process document."}`);
+            } else {
+                const extractedText = data.text || "";
+                appendMessageBubble("bot", `📷 **[Extracted OCR Content]**\n\n${extractedText}`);
+            }
+        } else {
+            const err = await res.text();
+            appendMessageBubble("bot", `📷 **[Digitization Failed]**\n\n⚠️ OCR API replied with failure status: ${err}`);
+        }
+    } catch (e) {
+        typingBubble.remove();
+        console.error("OCR API error:", e);
+        appendMessageBubble("bot", "📷 **[Connection Error]**\n\n⚠️ Failed to communicate with Document Digitization server. Ensure the backend FastAPI is online.");
     }
 }
 

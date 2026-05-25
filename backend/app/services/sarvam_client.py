@@ -1,5 +1,6 @@
 import requests
 import logging
+import re
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class SarvamClient:
             "Content-Type": "application/json"
         }
         
-    def chat_complete(self, messages, model="sarvam-30b", temperature=0.7, max_tokens=1000):
+    def chat_complete(self, messages, model="sarvam-30b", temperature=0.7, max_tokens=4000):
         """
         Calls the Sarvam AI Chat Completions API.
         Compatible with OpenAI chat payloads.
@@ -39,7 +40,14 @@ class SarvamClient:
         try:
             response = requests.post(url, json=payload, headers=self._get_headers())
             if response.status_code == 200:
-                return response.json()
+                data = response.json()
+                # Ensure choices content is never empty if reasoning_content is present
+                if "choices" in data:
+                    for choice in data["choices"]:
+                        msg = choice.get("message", {})
+                        if msg and not msg.get("content") and msg.get("reasoning_content"):
+                            msg["content"] = msg["reasoning_content"]
+                return data
             else:
                 logger.error(f"Sarvam API error: Status {response.status_code} - {response.text}")
                 return {
@@ -96,7 +104,41 @@ class SarvamClient:
                 "error": True,
                 "message": f"Exception connecting to Sarvam STT: {str(e)}"
             }
-            
+    def _chunk_text(self, text, max_chars=450):
+        """Slices a long text into chunks of at most max_chars characters."""
+        # Simple split by punctuation or sentence ends (. ! ? | \n)
+        raw_sentences = re.split(r'(?<=[.!?।\n])\s+', text)
+        segments = []
+        current_chunk = ""
+        for sentence in raw_sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            # If a single sentence is longer than max_chars, hard-split it by spaces/words
+            if len(sentence) > max_chars:
+                if current_chunk:
+                    segments.append(current_chunk)
+                    current_chunk = ""
+                words = sentence.split(" ")
+                sub_chunk = ""
+                for word in words:
+                    if len(sub_chunk) + len(word) + 1 <= max_chars:
+                        sub_chunk += (" " if sub_chunk else "") + word
+                    else:
+                        segments.append(sub_chunk)
+                        sub_chunk = word
+                if sub_chunk:
+                    current_chunk = sub_chunk
+            else:
+                if len(current_chunk) + len(sentence) + 1 <= max_chars:
+                    current_chunk += (" " if current_chunk else "") + sentence
+                else:
+                    segments.append(current_chunk)
+                    current_chunk = sentence
+        if current_chunk:
+            segments.append(current_chunk)
+        return segments
+
     def text_to_speech(self, text, language_code="hi-IN", speaker="ritu", pace=1.0):
         """
         Calls Sarvam Bulbul v3 Text-to-Speech API.
@@ -111,9 +153,15 @@ class SarvamClient:
                 "message": "TTS requires a valid Sarvam API Key."
             }
             
+        # Dynamically chunk text to comply with the 500 character API limit per segment
+        if hasattr(text, "strip"):
+            inputs = self._chunk_text(text)
+        else:
+            inputs = text
+            
         url = f"{self.base_url}/text-to-speech"
         payload = {
-            "inputs": [text] if hasattr(text, "strip") else text, # Support list of inputs or string
+            "inputs": inputs,
             "model": "bulbul:v3",
             "target_language_code": language_code,
             "speaker": speaker,
@@ -138,6 +186,186 @@ class SarvamClient:
             return {
                 "error": True,
                 "message": f"Exception connecting to Sarvam TTS: {str(e)}"
+            }
+            
+    def digitize_document(self, file_bytes: bytes, file_name: str, language_code: str = "en-IN") -> dict:
+        """
+        Orchestrates the entire asynchronous Document Digitization (OCR) workflow:
+        1. POST /doc-digitization/job/v1 to initialize the job and get a job_id.
+        2. POST /doc-digitization/job/v1/upload-files to get signed Azure upload URL for the job.
+        3. PUT file_bytes to Azure signed upload URL with x-ms-blob-type: BlockBlob header.
+        4. POST /doc-digitization/job/v1/{job_id}/start to begin processing.
+        5. Poll GET /doc-digitization/job/v1/{job_id}/status until job_state is Completed.
+        6. POST /doc-digitization/job/v1/{job_id}/download-files to get download URL for output zip.
+        7. Fetch the zip file and extract the document.md text in-memory.
+        """
+        if self.is_demo:
+            return {
+                "success": True,
+                "text": (
+                    "📷 **[DEMO MODE OCR RESULT]**\n\n"
+                    "Since the system is running in **Demo Mode** (missing `SARVAM_API_KEY`), "
+                    "no actual OCR call was made to the Sarvam Vision APIs.\n\n"
+                    "In production, uploading an image (JPEG, PNG, scanned PDF) will trigger the "
+                    "asynchronous Document Digitization workflow. Sarvam Vision will extract the text, "
+                    "structure all complex tables into clean Markdown grids, preserve reading hierarchy, "
+                    "and deliver a beautifully structured representation of your document across "
+                    "22 Indian languages and English!"
+                )
+            }
+
+        headers = self._get_headers()
+        import time
+        import zipfile
+        import io
+
+        try:
+            # 1. Initialize the Digitization Job
+            logger.info("Initializing document digitization job on Sarvam AI...")
+            create_url = f"{self.base_url}/doc-digitization/job/v1"
+            create_payload = {
+                "job_parameters": {
+                    "language": language_code if language_code else "en-IN",
+                    "output_format": "md"
+                }
+            }
+            create_res = requests.post(create_url, json=create_payload, headers=headers)
+            if create_res.status_code != 202:
+                logger.error(f"Failed to create digitization job: {create_res.status_code} - {create_res.text}")
+                return {"error": True, "message": f"Create job request failed: {create_res.text}"}
+                
+            job_data = create_res.json()
+            job_id = job_data.get("job_id")
+            if not job_id:
+                logger.error(f"Missing job_id in create response: {job_data}")
+                return {"error": True, "message": "Missing job_id from Sarvam AI response."}
+                
+            logger.info(f"Digitization job initialized with ID: {job_id}")
+
+            # 2. Get signed S3/Azure Upload URL
+            logger.info("Requesting pre-signed S3/Azure upload URL...")
+            upload_url_endpoint = f"{self.base_url}/doc-digitization/job/v1/upload-files"
+            upload_payload = {
+                "job_id": job_id,
+                "files": [file_name]
+            }
+            
+            res = requests.post(upload_url_endpoint, json=upload_payload, headers=headers)
+            if res.status_code != 200:
+                logger.error(f"Failed to get upload URL: {res.text}")
+                return {"error": True, "message": f"Signed upload URL request failed: {res.text}"}
+            
+            upload_data = res.json()
+            file_info = upload_data.get("upload_urls", {}).get(file_name, {})
+            presigned_url = file_info.get("file_url") if isinstance(file_info, dict) else file_info
+            
+            if not presigned_url:
+                logger.error(f"Missing upload URL in response: {upload_data}")
+                return {"error": True, "message": "Missing presigned upload URL from Sarvam."}
+                
+            # 3. PUT file_bytes to pre-signed URL (requires Azure BlockBlob header)
+            logger.info(f"Uploading file binary to presigned URL (Job: {job_id})...")
+            content_type = "application/pdf" if file_name.lower().endswith(".pdf") else "image/png"
+            put_headers = {
+                "Content-Type": content_type,
+                "x-ms-blob-type": "BlockBlob"
+            }
+            
+            put_res = requests.put(presigned_url, data=file_bytes, headers=put_headers)
+            if put_res.status_code not in [200, 201]:
+                logger.error(f"Binary upload failed: {put_res.status_code} - {put_res.text}")
+                return {"error": True, "message": f"S3 binary upload failed with status {put_res.status_code}"}
+                
+            # 4. Start Document processing job
+            logger.info("Triggering async document intelligence job...")
+            start_url = f"{self.base_url}/doc-digitization/job/v1/{job_id}/start"
+            
+            start_res = requests.post(start_url, json={}, headers=headers)
+            if start_res.status_code not in [200, 202]:
+                logger.error(f"Failed to start digitization job: {start_res.text}")
+                return {"error": True, "message": f"Job start failed: {start_res.text}"}
+                
+            # 5. Polling for Job completion status
+            status_url = f"{self.base_url}/doc-digitization/job/v1/{job_id}/status"
+            max_retries = 30
+            polling_interval = 2.0
+            
+            logger.info(f"Polling job {job_id} for completion...")
+            for attempt in range(max_retries):
+                time.sleep(polling_interval)
+                status_res = requests.get(status_url, headers=headers)
+                if status_res.status_code != 200:
+                    logger.error(f"Status poll failed: {status_res.text}")
+                    return {"error": True, "message": f"Job status polling failed: {status_res.text}"}
+                
+                status_data = status_res.json()
+                job_status = status_data.get("job_state") or status_data.get("status")
+                logger.info(f"Job {job_id} state on attempt {attempt+1}: {job_status}")
+                
+                if job_status and job_status.upper() == "COMPLETED":
+                    break
+                elif job_status and job_status.upper() == "FAILED":
+                    logger.error(f"Sarvam Vision job failed: {status_data}")
+                    return {"error": True, "message": "Document digitization job failed on Sarvam AI."}
+            else:
+                logger.error(f"Digitization job {job_id} timed out.")
+                return {"error": True, "message": "Document digitization job timed out."}
+                
+            # 6. Fetch pre-signed download URLs for completed job files
+            logger.info("Retrieving pre-signed download URLs...")
+            download_url = f"{self.base_url}/doc-digitization/job/v1/{job_id}/download-files"
+            download_res = requests.post(download_url, json={}, headers=headers)
+            if download_res.status_code != 200:
+                logger.error(f"Failed to get download URLs: {download_res.text}")
+                return {"error": True, "message": f"Download URL retrieval failed: {download_res.text}"}
+                
+            download_data = download_res.json()
+            download_urls = download_data.get("download_urls", download_data)
+            
+            output_url = None
+            if isinstance(download_urls, dict):
+                for fname, durl in download_urls.items():
+                    actual_url = durl.get("file_url") if isinstance(durl, dict) else durl
+                    if fname.endswith(".zip") or fname.endswith(".md"):
+                        output_url = actual_url
+                        break
+                if not output_url and download_urls:
+                    first_val = next(iter(download_urls.values()))
+                    output_url = first_val.get("file_url") if isinstance(first_val, dict) else first_val
+            
+            if not output_url:
+                logger.error(f"Missing output file in download links: {download_data}")
+                return {"error": True, "message": "Could not find digitised output file link in download payload."}
+                
+            # 7. Download and extract in-memory zip file to retrieve markdown contents
+            logger.info("Downloading OCR results archive...")
+            file_res = requests.get(output_url)
+            if file_res.status_code != 200:
+                logger.error(f"Failed to download extracted file: {file_res.status_code}")
+                return {"error": True, "message": "Failed to download OCR markdown file from S3."}
+                
+            # Parse ZIP archive strictly in-memory
+            zip_bytes = io.BytesIO(file_res.content)
+            with zipfile.ZipFile(zip_bytes) as z:
+                namelist = z.namelist()
+                md_file = next((name for name in namelist if name.endswith(".md")), None)
+                if md_file:
+                    extracted_text = z.read(md_file).decode("utf-8")
+                else:
+                    logger.error(f"No markdown file found in output archive. Available files: {namelist}")
+                    return {"error": True, "message": "No markdown file found in the output archive."}
+
+            return {
+                "success": True,
+                "text": extracted_text,
+                "job_id": job_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Exception during Document Digitization: {e}")
+            return {
+                "error": True,
+                "message": f"Exception orchestrating document digitization: {str(e)}"
             }
             
     def _get_demo_chat_response(self, messages):

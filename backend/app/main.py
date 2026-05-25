@@ -47,6 +47,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = "sarvam-30b"
     use_rag: Optional[bool] = True
     temperature: Optional[float] = 0.5
+    target_language: Optional[str] = "Hindi"
 
 class TTSRequest(BaseModel):
     text: str
@@ -89,26 +90,30 @@ async def chat_endpoint(request: ChatRequest):
         context = rag_engine.retrieve_context(user_query, top_k=3)
         
     # 3. Create or inject System Prompt
+    target_lang = request.target_language or "Hindi"
     system_prompt = (
         "You are a professional, helpful, and highly intelligent corporate virtual assistant for our company. "
         "Your responses should be polite, clear, and business-appropriate. "
         "You are powered by the state-of-the-art Sarvam AI models developed in India.\n\n"
+        f"CRITICAL DIRECTIVE: You MUST formulate your entire response in the {target_lang} language. "
+        f"Translate any technical terms, grounded documents, and corporate records into natural, fluent {target_lang}. "
+        f"Even if the user writes their query in English, you must respond exclusively in the {target_lang} language.\n\n"
     )
     
     if context:
         system_prompt += (
-            "Grounded Company Knowledge:\n"
+            f"Grounded Company Knowledge (Translate and answer in {target_lang}):\n"
             "Use ONLY the following verified document snippets to answer the user's question. "
             "Cite the source document names when applicable. If the context does not contain enough info, "
-            "politely state that you do not find details in the corporate records and answer based on general knowledge "
-            "while warning the user that this isn't verified by corporate documents.\n\n"
+            f"politely state in {target_lang} that you do not find details in the corporate records and answer based on general knowledge "
+            f"while warning the user that this isn't verified by corporate documents.\n\n"
             f"{context}\n\n"
             "Remember: Ground your primary response on the snippets provided above."
         )
     else:
         system_prompt += (
-            "No specific document context is loaded. Answer the user queries directly in a concise corporate tone. "
-            "Mention you can answer company-specific policies/guidelines if relevant documents are uploaded."
+            f"No specific document context is loaded. Answer the user queries directly in a concise corporate tone, written in {target_lang}. "
+            f"Mention you can answer company-specific policies/guidelines if relevant documents are uploaded."
         )
         
     # Check if there is already a system prompt in history, replace/insert at the front
@@ -215,6 +220,27 @@ async def text_to_speech_endpoint(request: TTSRequest):
     except Exception as e:
         logger.error(f"Error in text-to-speech API: {e}")
         raise HTTPException(status_code=500, detail=f"TTS Service Error: {str(e)}")
+
+@app.post("/api/ocr")
+async def ocr_endpoint(
+    file: UploadFile = File(...),
+    language_code: str = Form("en-IN")
+):
+    """
+    Receives an image or scanned document PDF, and runs it through the
+    Sarvam Vision Document Digitization / OCR pipeline to extract structured text.
+    """
+    try:
+        file_bytes = await file.read()
+        ocr_result = sarvam_client.digitize_document(
+            file_bytes=file_bytes,
+            file_name=file.filename,
+            language_code=language_code
+        )
+        return ocr_result
+    except Exception as e:
+        logger.error(f"Error in OCR API endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"OCR Service Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

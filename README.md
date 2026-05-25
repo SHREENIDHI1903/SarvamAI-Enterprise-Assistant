@@ -18,6 +18,7 @@ graph TD
 ## 🌟 Key Features
 
 *   **India-Centric Multi-lingual Intelligence:** Powered by `sarvam-30b`, allowing professional corporate conversation in English and 10+ Indian languages (Hindi, Bengali, Tamil, Telugu, Kannada, Malayalam, Marathi, Gujarati, Punjabi, and more).
+*   **📷 Sarvam Vision OCR & Layout Preservation:** Scans images (PNG, JPG, WEBP) or scanned PDFs on-the-fly. Orchestrates an async backend pipeline with Azure S3 uploads, status polling, and **in-memory zip extraction** to parse documents and complex tables into clean Markdown format. Features a sliding scanning laser visual overlay. Detailed specs are available in the [OCR Documentation](ocr_documentation.md).
 *   **Local RAG Grounding:** Upload enterprise PDFs, TXT, MD, or JSON files. They are parsed, chunked, and indexed locally into a TF-IDF keyword search engine. Relevant snippets are injected automatically into the LLM system prompt.
 *   **🎙️ Speech-to-Text Input (STT):** Speak directly into your microphone in any supported Indian language using the high-performance **Sarvam Saaras v3** engine to auto-transcribe and submit queries.
 *   **🔊 Text-to-Speech Output (TTS):** Beautiful voice synthesization of chatbot replies using the state-of-the-art **Sarvam Bulbul v3** model. Supports multiple high-fidelity Indian speaker voices (Ritu, Aditya, Shubh) and variable speech speed.
@@ -31,6 +32,7 @@ graph TD
 ```
 /sarvamai_chatbot
 │
+├── ocr_documentation.md        # Technical specs, architecture sequences, and usage guide for OCR
 ├── /backend                    # FastAPI Backend Server
 │   ├── app/
 │   │   ├── config.py           # Server port, host, and storage directories
@@ -156,7 +158,13 @@ Running through an HTTP server ensures full compatibility with browser permissio
    * Select your target language in the preferences dropdown (e.g. Hindi or Bengali).
    * Click the **microphone icon** in the input bar. Allow browser microphone access when prompted.
    * Speak clearly. When finished speaking, click **"Done"**. The backend will transcribe your voice using Saaras v3, populate it in the text area, and automatically submit it.
-5. **Listening to Responses (TTS):**
+5. **Document Digitization & OCR Scanning:**
+   * Select your preferred language in the Preferences sidebar (e.g. Kannada, Hindi, or Tamil) to act as a transcription script hint.
+   * Click the **camera icon** next to the voice microphone in the chat input bar.
+   * Select any local image (PNG, JPEG, WEBP) or scanned document PDF (Max 10MB).
+   * A thumbnail preview will render immediately inside your message bubble, and a pulsing linear scanner animation will track the active OCR pipeline.
+   * Within seconds, the backend unzips and extracts the document in-memory, delivering layout-preserved structured text and tables inside a Markdown bot bubble.
+6. **Listening to Responses (TTS):**
    * Make sure **Auto-play TTS Voice Responses** is checked in the preferences, or click the **speaker icon** on any individual assistant message.
    * The audio synthesizes instantly using Bulbul v3 and plays back via a sleek floating control bar at the bottom.
 
@@ -164,10 +172,15 @@ Running through an HTTP server ensures full compatibility with browser permissio
 
 ## 🛠️ Tech Stack & Service Breakdown
 
+*   **Sarvam AI Services Integration:**
+    *   **LLM Engine**: `sarvam-30b` (conversational reasoning optimized for Indian contexts).
+    *   **Saaras v3**: Speech-to-Text dynamic transcription and translation.
+    *   **Bulbul v3**: High-fidelity Text-to-Speech regional voice synthesis.
+    *   **Sarvam Vision**: Asynchronous Document Digitization / Layout-preserving OCR pipeline.
 *   **Backend Framework:** [FastAPI](https://fastapi.tiangolo.com/) - Extremely lightweight, high-performance, asynchronous Python web framework.
 *   **PDF Parser:** [pypdf](https://pypi.org/project/pypdf/) - Pure-python PDF library capable of extracting text cleanly.
 *   **Search Engine:** Custom Term Frequency-Inverse Document Frequency (TF-IDF) retrieval mechanism with smooth IDF calculations for super-fast keyword grounding without needing external docker containers.
 *   **Frontend UI:**
     *   Responsive Sidebar & Main Chat grid layout.
     *   Custom HSL-tailored typography and vibrant color gradients.
-    *   Voice record animation, pulsing network check, and sliding preference sliders.
+    *   Voice record animation, pulsing network check, sliding preference sliders, and camera triggers.

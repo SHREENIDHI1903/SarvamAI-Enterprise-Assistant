@@ -2,6 +2,11 @@ import os
 import re
 import json
 import math
+import warnings
+
+# Suppress CryptographyDeprecationWarning from pypdf import of ARC4
+warnings.filterwarnings("ignore", message=".*ARC4 has been moved to cryptography.*")
+
 from pypdf import PdfReader
 from app.config import settings
 
