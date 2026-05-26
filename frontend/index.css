@@ -1309,6 +1309,114 @@ body.light-theme .thinking-content {
 }
 
 /* ==========================================================================
+   CHAT SESSION HISTORY & NEW CHAT BUTTON STYLES
+   ========================================================================== */
+.new-chat-btn {
+    background: linear-gradient(135deg, var(--accent-primary) 0%, #5558e6 100%);
+    box-shadow: 0 4px 14px rgba(var(--accent-primary-rgb), 0.2);
+    border-radius: var(--border-radius-md);
+    padding: 0.75rem 1rem;
+    font-size: 0.9rem;
+    margin-bottom: 0.2rem;
+    transition: all var(--transition-normal);
+}
+.new-chat-btn:hover {
+    background: linear-gradient(135deg, #5558e6 0%, var(--accent-primary) 100%);
+    box-shadow: 0 6px 20px rgba(var(--accent-primary-rgb), 0.35);
+    transform: translateY(-1px);
+}
+
+.history-panel {
+    gap: 0.5rem !important;
+}
+
+.sessions-list-container {
+    max-height: 180px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.sessions-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.sessions-list li {
+    font-size: 0.8rem;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--border-radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    animation: slide-in 0.2s ease;
+}
+
+.sessions-list li:hover {
+    border-color: var(--accent-primary);
+    background-color: rgba(var(--accent-primary-rgb), 0.04);
+}
+
+.sessions-list li.active {
+    border-color: var(--accent-primary);
+    background: linear-gradient(135deg, rgba(var(--accent-primary-rgb), 0.1) 0%, rgba(var(--accent-primary-rgb), 0.02) 100%);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: inset 0 0 8px rgba(var(--accent-primary-rgb), 0.05);
+}
+
+.sessions-list li .session-title {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+}
+
+.sessions-list li .session-title i {
+    color: var(--text-muted);
+}
+
+.sessions-list li.active .session-title i {
+    color: var(--accent-primary);
+}
+
+.sessions-list li .delete-session-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.sessions-list li:hover .delete-session-btn {
+    opacity: 1;
+}
+
+.sessions-list li .delete-session-btn:hover {
+    color: #ef4444;
+    background-color: rgba(239, 68, 68, 0.1);
+}
+
+.empty-history {
+    color: var(--text-muted);
+    font-style: italic;
+    text-align: center;
+    font-size: 0.75rem;
+    padding: 0.5rem 0;
+}
+
+/* ==========================================================================
    RESPONSIVE DESIGN ADAPTATIONS
    ========================================================================== */
 @media (max-width: 900px) {

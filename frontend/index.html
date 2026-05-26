@@ -27,6 +27,19 @@
                 </div>
             </div>
 
+            <button class="btn btn-primary new-chat-btn" id="new-chat-btn">
+                <i class="fa-solid fa-plus"></i> New Chat
+            </button>
+
+            <div class="history-panel card" id="history-panel">
+                <h3><i class="fa-solid fa-clock-rotate-left"></i> Chat History</h3>
+                <div class="sessions-list-container">
+                    <ul class="sessions-list" id="sessions-list">
+                        <!-- Populated by JavaScript -->
+                    </ul>
+                </div>
+            </div>
+
             <div class="status-panel card">
                 <div class="panel-header">
                     <h3><i class="fa-solid fa-server"></i> System Status</h3>
@@ -79,7 +92,7 @@
 
                 <div class="toggle-group">
                     <label class="toggle-switch">
-                        <input type="checkbox" id="voice-output-toggle" checked>
+                        <input type="checkbox" id="voice-output-toggle">
                         <span class="slider"></span>
                     </label>
                     <span class="toggle-label">Auto-play TTS Voice Responses</span>

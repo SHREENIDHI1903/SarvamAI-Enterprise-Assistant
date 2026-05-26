@@ -16,6 +16,9 @@ class Settings:
     SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
     SARVAM_BASE_URL = "https://api.sarvam.ai"
     
+    # Chat History Config
+    MAX_HISTORY_LEN = int(os.getenv("MAX_HISTORY_LEN", 8))
+    
     # Server configs
     PORT = int(os.getenv("PORT", 8000))
     HOST = os.getenv("HOST", "127.0.0.1")

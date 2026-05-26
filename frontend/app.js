@@ -5,6 +5,8 @@ const BASE_URL = "http://127.0.0.1:8000";
 
 let state = {
     messages: [],
+    sessions: [],
+    currentSessionId: null,
     useRAG: true,
     isRecording: false,
     mediaRecorder: null,
@@ -51,7 +53,9 @@ const elements = {
     audioStopBtn: document.getElementById("audio-stop-btn"),
     globalAudioPlayer: document.getElementById("global-audio-player"),
     ocrBtn: document.getElementById("ocr-btn"),
-    ocrFileInput: document.getElementById("ocr-file-input")
+    ocrFileInput: document.getElementById("ocr-file-input"),
+    newChatBtn: document.getElementById("new-chat-btn"),
+    sessionsList: document.getElementById("sessions-list")
 };
 
 // ==========================================================================
@@ -69,6 +73,10 @@ document.addEventListener("DOMContentLoaded", () => {
     setupSTTHandlers();
     setupOCRHandlers();
     setupSuggestedChips();
+    
+    // 3. Initialize chat history sessions
+    initializeSessions();
+    setupSessionHandlers();
 });
 
 // ==========================================================================
@@ -82,6 +90,14 @@ function setupPreferencesHandlers() {
     // Reset conversation history when target language changes to prevent model in-context language blending
     elements.languageSelect.addEventListener("change", () => {
         state.messages = [];
+        const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
+        if (currentSession) {
+            currentSession.messages = [];
+            currentSession.title = "New Chat";
+            localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+        }
+        renderSessionsList();
+        renderChatMessages();
         const activeLangName = elements.languageSelect.options[elements.languageSelect.selectedIndex].text.split(" (")[0];
         appendMessageBubble("bot", `🌐 **[System Notification]** Target language changed to **${activeLangName}**. The conversation history has been reset to ensure high-quality translation and reasoning in your preferred language.`);
     });
@@ -308,6 +324,18 @@ async function submitUserMessage() {
     appendMessageBubble("user", text);
     state.messages.push({ role: "user", content: text });
     
+    // Auto-name active session title if it was default "New Chat"
+    const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
+    if (currentSession) {
+        if (currentSession.messages.length === 1 || currentSession.title === "New Chat") {
+            const titleText = text.length > 25 ? text.substring(0, 22) + "..." : text;
+            currentSession.title = titleText;
+            renderSessionsList();
+        }
+        currentSession.messages = state.messages;
+        localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+    }
+    
     // 2. Append typing indicator
     const typingBubble = appendMessageBubble("bot", "", { isTyping: true });
     
@@ -351,7 +379,19 @@ async function submitUserMessage() {
                 reasoning_content: reasoning
             });
             
-            state.messages.push({ role: "assistant", content: botResponse || reasoning || "" });
+            state.messages.push({
+                role: "assistant",
+                content: botResponse || reasoning || "",
+                rag_applied: data.rag_applied,
+                rag_sources: data.rag_sources,
+                reasoning_content: reasoning
+            });
+            
+            // Update active session messages
+            if (currentSession) {
+                currentSession.messages = state.messages;
+                localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+            }
             
             // Auto play voice response if checked
             if (elements.voiceOutputToggle.checked) {
@@ -618,6 +658,10 @@ async function handleOCRUpload(file) {
         return;
     }
     
+    const userMsgContent = file.type.startsWith("image/") 
+        ? `📷 **[Uploaded Document for OCR]**`
+        : `📷 **[Uploaded PDF for OCR]**\n\n📄 *\"${file.name}\"* (Scanned Document)`;
+
     // 2. Render Image Attachment Bubble on Frontend (for supreme visual fidelity)
     if (file.type.startsWith("image/")) {
         // Read file as base64 data URL to show a local thumbnail preview in the chat
@@ -629,6 +673,20 @@ async function handleOCRUpload(file) {
         reader.readAsDataURL(file);
     } else {
         appendMessageBubble("user", `📷 **[Uploaded PDF for OCR]**\n\n📄 *\"${file.name}\"* (Scanned Document)`);
+    }
+
+    state.messages.push({ role: "user", content: userMsgContent });
+    
+    // Auto-name active session title
+    const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
+    if (currentSession) {
+        if (currentSession.messages.length === 1 || currentSession.title === "New Chat") {
+            const cleanName = file.name.length > 15 ? file.name.substring(0, 12) + "..." : file.name;
+            currentSession.title = `OCR: ${cleanName}`;
+            renderSessionsList();
+        }
+        currentSession.messages = state.messages;
+        localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
     }
 
     // 3. Show loading scanning state
@@ -649,19 +707,39 @@ async function handleOCRUpload(file) {
         if (res.ok) {
             const data = await res.json();
             if (data.error) {
-                appendMessageBubble("bot", `📷 **[Digitization Failed]**\n\n⚠️ ${data.message || "Failed to process document."}`);
+                const errMsg = `📷 **[Digitization Failed]**\n\n⚠️ ${data.message || "Failed to process document."}`;
+                appendMessageBubble("bot", errMsg);
+                state.messages.push({ role: "assistant", content: errMsg });
             } else {
                 const extractedText = data.text || "";
-                appendMessageBubble("bot", `📷 **[Extracted OCR Content]**\n\n${extractedText}`);
+                const successMsg = `📷 **[Extracted OCR Content]**\n\n${extractedText}`;
+                appendMessageBubble("bot", successMsg);
+                state.messages.push({ role: "assistant", content: successMsg });
+            }
+            if (currentSession) {
+                currentSession.messages = state.messages;
+                localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
             }
         } else {
             const err = await res.text();
-            appendMessageBubble("bot", `📷 **[Digitization Failed]**\n\n⚠️ OCR API replied with failure status: ${err}`);
+            const errMsg = `📷 **[Digitization Failed]**\n\n⚠️ OCR API replied with failure status: ${err}`;
+            appendMessageBubble("bot", errMsg);
+            state.messages.push({ role: "assistant", content: errMsg });
+            if (currentSession) {
+                currentSession.messages = state.messages;
+                localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+            }
         }
     } catch (e) {
         typingBubble.remove();
         console.error("OCR API error:", e);
-        appendMessageBubble("bot", "📷 **[Connection Error]**\n\n⚠️ Failed to communicate with Document Digitization server. Ensure the backend FastAPI is online.");
+        const errMsg = "📷 **[Connection Error]**\n\n⚠️ Failed to communicate with Document Digitization server. Ensure the backend FastAPI is online.";
+        appendMessageBubble("bot", errMsg);
+        state.messages.push({ role: "assistant", content: errMsg });
+        if (currentSession) {
+            currentSession.messages = state.messages;
+            localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+        }
     }
 }
 
@@ -786,4 +864,179 @@ async function clearRAGKnowledge() {
     } catch (e) {
         alert("Failed to connect to backend server.");
     }
+}
+
+// ==========================================================================
+// CHAT SESSION & CONVERSATION HISTORY MANAGEMENT
+// ==========================================================================
+function initializeSessions() {
+    const storedSessions = localStorage.getItem("sarvam_chat_sessions");
+    const storedCurrentId = localStorage.getItem("sarvam_chat_current_session_id");
+    
+    if (storedSessions) {
+        state.sessions = JSON.parse(storedSessions);
+        state.currentSessionId = storedCurrentId;
+    }
+    
+    // If no sessions, create one initial default session
+    if (state.sessions.length === 0) {
+        createNewSession(true);
+    } else {
+        const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
+        if (currentSession) {
+            state.messages = currentSession.messages;
+            renderChatMessages();
+        } else {
+            // Fallback to first session if currentSessionId is invalid
+            state.currentSessionId = state.sessions[0].id;
+            state.messages = state.sessions[0].messages;
+            localStorage.setItem("sarvam_chat_current_session_id", state.currentSessionId);
+            renderChatMessages();
+        }
+        renderSessionsList();
+    }
+}
+
+function setupSessionHandlers() {
+    elements.newChatBtn.addEventListener("click", () => {
+        createNewSession();
+    });
+}
+
+function createNewSession(isInitial = false) {
+    const sessionId = "session_" + Date.now();
+    const newSession = {
+        id: sessionId,
+        title: "New Chat",
+        messages: []
+    };
+    
+    state.sessions.unshift(newSession);
+    state.currentSessionId = sessionId;
+    state.messages = [];
+    
+    localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+    localStorage.setItem("sarvam_chat_current_session_id", sessionId);
+    
+    renderSessionsList();
+    renderChatMessages();
+}
+
+function renderSessionsList() {
+    elements.sessionsList.innerHTML = "";
+    
+    if (state.sessions.length === 0) {
+        elements.sessionsList.innerHTML = `<li class="empty-history">No chat history</li>`;
+        return;
+    }
+    
+    state.sessions.forEach(session => {
+        const li = document.createElement("li");
+        li.className = session.id === state.currentSessionId ? "active" : "";
+        li.setAttribute("data-session-id", session.id);
+        
+        li.innerHTML = `
+            <div class="session-title">
+                <i class="fa-regular fa-message"></i>
+                <span title="${session.title}">${session.title}</span>
+            </div>
+            <button class="delete-session-btn" title="Delete Chat">
+                <i class="fa-solid fa-trash-can"></i>
+            </button>
+        `;
+        
+        li.addEventListener("click", (e) => {
+            if (e.target.closest(".delete-session-btn")) return;
+            switchSession(session.id);
+        });
+        
+        const deleteBtn = li.querySelector(".delete-session-btn");
+        deleteBtn.addEventListener("click", () => {
+            deleteSession(session.id);
+        });
+        
+        elements.sessionsList.appendChild(li);
+    });
+}
+
+function switchSession(sessionId) {
+    if (state.currentSessionId === sessionId) return;
+    
+    state.currentSessionId = sessionId;
+    localStorage.setItem("sarvam_chat_current_session_id", sessionId);
+    
+    const currentSession = state.sessions.find(s => s.id === sessionId);
+    if (currentSession) {
+        state.messages = currentSession.messages;
+    } else {
+        state.messages = [];
+    }
+    
+    renderSessionsList();
+    renderChatMessages();
+}
+
+function deleteSession(sessionId) {
+    const confirmDelete = confirm("Are you sure you want to delete this chat session?");
+    if (!confirmDelete) return;
+    
+    state.sessions = state.sessions.filter(s => s.id !== sessionId);
+    localStorage.setItem("sarvam_chat_sessions", JSON.stringify(state.sessions));
+    
+    if (state.currentSessionId === sessionId) {
+        if (state.sessions.length > 0) {
+            state.currentSessionId = state.sessions[0].id;
+            state.messages = state.sessions[0].messages;
+        } else {
+            state.currentSessionId = null;
+            state.messages = [];
+            createNewSession();
+            return;
+        }
+    }
+    
+    localStorage.setItem("sarvam_chat_current_session_id", state.currentSessionId);
+    renderSessionsList();
+    renderChatMessages();
+}
+
+function renderChatMessages() {
+    elements.chatMessages.innerHTML = "";
+    
+    if (state.messages.length === 0) {
+        renderWelcomeScreen();
+        return;
+    }
+    
+    state.messages.forEach(msg => {
+        appendMessageBubble(msg.role === "user" ? "user" : "bot", msg.content, {
+            rag_applied: msg.rag_applied,
+            rag_sources: msg.rag_sources,
+            reasoning_content: msg.reasoning_content
+        });
+    });
+}
+
+function renderWelcomeScreen() {
+    elements.chatMessages.innerHTML = `
+        <div class="message system-welcome">
+            <div class="welcome-card card">
+                <div class="welcome-icon-wrapper">
+                    <i class="fa-solid fa-sparkles"></i>
+                </div>
+                <h2>How can I assist you today?</h2>
+                <p>I am your specialized corporate assistant powered by <strong>Sarvam AI</strong>. Upload documents to query company secrets, or speak directly in your regional language!</p>
+                
+                <div class="suggested-queries">
+                    <h4>Suggested Quick Prompts</h4>
+                    <div class="suggestion-chips">
+                        <button class="chip" data-query="Explain how RAG grounding works in this chatbot.">💡 Tell me about RAG Grounding</button>
+                        <button class="chip" data-query="How does Sarvam AI optimize for Indian languages?">🇮🇳 Indian Language Optimization</button>
+                        <button class="chip" data-query="Help me write a professional leave request email in formal English and Hindi.">📝 Leave Request Email</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    setupSuggestedChips();
 }

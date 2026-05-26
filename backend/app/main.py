@@ -74,14 +74,20 @@ async def chat_endpoint(request: ChatRequest):
     """
     Handles user chat inquiries.
     If RAG is active, searches local database and embeds relevant text into system prompt.
+    Applies sliding window context history optimization to limit token cost and latency.
     """
-    messages_payload = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+    # Filter to extract user and assistant messages from request
+    chat_history = [
+        {"role": msg.role, "content": msg.content}
+        for msg in request.messages
+        if msg.role in ("user", "assistant")
+    ]
     
     # 1. Fetch latest user query
     user_query = ""
-    for msg in reversed(request.messages):
-        if msg.role == "user":
-            user_query = msg.content
+    for msg in reversed(chat_history):
+        if msg["role"] == "user":
+            user_query = msg["content"]
             break
             
     context = ""
@@ -89,7 +95,7 @@ async def chat_endpoint(request: ChatRequest):
     if request.use_rag and user_query:
         context = rag_engine.retrieve_context(user_query, top_k=3)
         
-    # 3. Create or inject System Prompt
+    # 3. Create System Prompt with grounding context
     target_lang = request.target_language or "Hindi"
     system_prompt = (
         "You are a professional, helpful, and highly intelligent corporate virtual assistant for our company. "
@@ -116,28 +122,33 @@ async def chat_endpoint(request: ChatRequest):
             f"Mention you can answer company-specific policies/guidelines if relevant documents are uploaded."
         )
         
-    # Check if there is already a system prompt in history, replace/insert at the front
-    has_system = False
-    for msg in messages_payload:
-        if msg["role"] == "system":
-            msg["content"] = system_prompt
-            has_system = True
-            break
-            
-    if not has_system:
-        messages_payload.insert(0, {"role": "system", "content": system_prompt})
+    # 4. Truncate conversation history to keep only the recent context window
+    truncated_history = list(chat_history)
+    history_truncated = False
+    if len(chat_history) > settings.MAX_HISTORY_LEN:
+        truncated_history = chat_history[-settings.MAX_HISTORY_LEN:]
+        history_truncated = True
+        logger.info(
+            f"Truncated history from {len(chat_history)} to last {settings.MAX_HISTORY_LEN} messages "
+            f"for performance and token optimization."
+        )
         
-    # 4. Generate completions from Sarvam AI client
+    # Insert system prompt at the very front of the payload for the LLM
+    truncated_history.insert(0, {"role": "system", "content": system_prompt})
+        
+    # 5. Generate completions from Sarvam AI client
     response = sarvam_client.chat_complete(
-        messages=messages_payload,
+        messages=truncated_history,
         model=request.model,
         temperature=request.temperature
     )
     
-    # Include metadata about RAG in API response
+    # Include metadata about RAG and history truncation in API response
     if "choices" in response:
         response["rag_applied"] = bool(context)
         response["rag_sources"] = list(set(doc["file"] for doc in rag_engine.documents)) if context else []
+        response["history_truncated"] = history_truncated
+        response["history_length_sent"] = len(truncated_history) - 1  # Excluding system prompt
         
     return response
 
